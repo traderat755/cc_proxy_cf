@@ -16,21 +16,24 @@ export interface Config {
 class ConfigManager {
   private _config: Config;
 
-  constructor() {
-    const env = typeof process !== 'undefined' ? process.env : {};
+  constructor(env?: any) {
+    // For Cloudflare Workers, use the env parameter
+    // For Node.js, use process.env
+    const environment = env || (typeof process !== 'undefined' ? process.env : {});
+
     this._config = {
-      openaiBaseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
-      azureApiVersion: env.AZURE_API_VERSION,
-      host: env.HOST || '0.0.0.0',
-      port: parseInt(env.PORT || '8082'),
-      logLevel: env.LOG_LEVEL || 'INFO',
-      maxTokensLimit: parseInt(env.MAX_TOKENS_LIMIT || '4096'),
-      minTokensLimit: parseInt(env.MIN_TOKENS_LIMIT || '100'),
-      requestTimeout: parseInt(env.REQUEST_TIMEOUT || '90'),
-      maxRetries: parseInt(env.MAX_RETRIES || '2'),
-      bigModel: env.BIG_MODEL || 'gpt-oss-120b',
-      middleModel: env.MIDDLE_MODEL || env.BIG_MODEL || 'gpt-oss-120b',
-      smallModel: env.SMALL_MODEL || 'gpt-oss-120b-mini'
+      openaiBaseUrl: environment.OPENAI_BASE_URL || 'https://api.openai.com/v1',
+      azureApiVersion: environment.AZURE_API_VERSION,
+      host: environment.HOST || '0.0.0.0',
+      port: parseInt(environment.PORT || '8082'),
+      logLevel: environment.LOG_LEVEL || 'INFO',
+      maxTokensLimit: parseInt(environment.MAX_TOKENS_LIMIT || '40960'),
+      minTokensLimit: parseInt(environment.MIN_TOKENS_LIMIT || '100'),
+      requestTimeout: parseInt(environment.REQUEST_TIMEOUT || '90'),
+      maxRetries: parseInt(environment.MAX_RETRIES || '2'),
+      bigModel: environment.BIG_MODEL || 'openai/gpt-oss-120b',
+      middleModel: environment.MIDDLE_MODEL || environment.BIG_MODEL || 'openai/gpt-oss-120b',
+      smallModel: environment.SMALL_MODEL || 'gpt-oss-20b'
     };
   }
 
@@ -49,5 +52,11 @@ class ConfigManager {
   }
 }
 
+// For Node.js environment
 export const config = new ConfigManager().config;
 export const configManager = new ConfigManager();
+
+// For Cloudflare Workers environment
+export function createConfigManager(env: any) {
+  return new ConfigManager(env);
+}

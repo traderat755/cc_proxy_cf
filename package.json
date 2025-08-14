@@ -4,7 +4,7 @@
   "description": "Claude-to-OpenAI API Proxy using Hono and TypeScript",
   "main": "dist/index.js",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev": "tsx watch --require dotenv/config src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
     "lint": "eslint src --ext .ts",
@@ -12,24 +12,31 @@
     "build-cf": "tsc -p tsconfig-cf.json && cp wrangler.toml dist/",
     "deploy-cf": "wrangler deploy"
   },
-  "keywords": ["claude", "openai", "proxy", "hono", "typescript"],
+  "keywords": [
+    "claude",
+    "openai",
+    "proxy",
+    "hono",
+    "typescript"
+  ],
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "hono": "^4.0.0",
     "@hono/node-server": "^1.8.0",
+    "dotenv": "^17.2.1",
+    "hono": "^4.0.0",
     "openai": "^4.20.0",
     "uuid": "^9.0.0"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^4.0.0",
     "@types/node": "^20.0.0",
     "@types/uuid": "^9.0.0",
-    "tsx": "^4.0.0",
-    "typescript": "^5.0.0",
-    "eslint": "^8.0.0",
     "@typescript-eslint/eslint-plugin": "^6.0.0",
     "@typescript-eslint/parser": "^6.0.0",
-    "wrangler": "^3.0.0",
-    "@cloudflare/workers-types": "^4.0.0"
+    "eslint": "^8.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0",
+    "wrangler": "^3.0.0"
   }
 }

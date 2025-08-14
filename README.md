@@ -67,9 +67,9 @@ pnpm lint
 
 ## Model Mapping
 
-- Claude Haiku models → `SMALL_MODEL` (default: gpt-oss-120b-mini)
-- Claude Sonnet models → `MIDDLE_MODEL` (default: gpt-oss-120b)
-- Claude Opus models → `BIG_MODEL` (default: gpt-oss-120b)
+- Claude Haiku models → `SMALL_MODEL` (default: openai/gpt-oss-120b)
+- Claude Sonnet models → `MIDDLE_MODEL` (default: openai/gpt-oss-120b)
+- Claude Opus models → `BIG_MODEL` (default: openai/gpt-oss-120b)
 
 ## Architecture
 

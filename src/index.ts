@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { serve } from '@hono/node-server';
 import { config } from './core/config.js';
 import routes from './api/routes.js';
@@ -12,8 +13,8 @@ function showHelp() {
   console.log('');
   console.log('Optional environment variables:');
   console.log(`  OPENAI_BASE_URL - OpenAI API base URL (default: https://api.openai.com/v1)`);
-  console.log(`  BIG_MODEL - Model for opus requests (default: gpt-oss-120b)`);
-  console.log(`  MIDDLE_MODEL - Model for sonnet requests (default: gpt-oss-120b)`);
+  console.log(`  BIG_MODEL - Model for opus requests (default: openai/gpt-oss-120b)`);
+  console.log(`  MIDDLE_MODEL - Model for sonnet requests (default: openai/gpt-oss-120b)`);
   console.log(`  SMALL_MODEL - Model for haiku requests (default: gpt-oss-20b)`);
   console.log(`  HOST - Server host (default: 0.0.0.0)`);
   console.log(`  PORT - Server port (default: 8082)`);

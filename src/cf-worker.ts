@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { createConfigManager } from './core/config-cf.js';
+import { createConfigManager } from './core/config.js';
 import routes from './api/routes-cf.js';
 import type { ExecutionContext } from '@cloudflare/workers-types';
 

@@ -1,10 +1,12 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { stream } from 'hono/streaming';
+import { stream, streamSSE } from 'hono/streaming';
 import { v4 as uuidv4 } from 'uuid';
 
 import { config } from '../core/config.js';
+import { configManager } from '../core/config.js';
 import { logger } from '../core/logger.js';
+import { TokenCounter, ApiKeyExtractor } from '../core/shared-utils.js';
 import { OpenAIClient } from '../core/client.js';
 import { modelManager } from '../core/model-manager.js';
 import { ClaudeMessagesRequest, ClaudeTokenCountRequest } from '../models/claude.js';
@@ -14,14 +16,47 @@ import {
   convertOpenAIStreamingToClaudeWithCancellation 
 } from '../conversion/response-converter.js';
 
+// Support for Cloudflare response converter if available
+let cfResponseConverter: any = null;
+try {
+  cfResponseConverter = await import('../conversion/response-converter-cf.js');
+} catch {
+  // Fallback to regular response converter
+}
+
 const app = new Hono();
 
-const openaiClient = new OpenAIClient(
-  '', // API key now comes from client requests
-  config.openaiBaseUrl,
-  config.requestTimeout,
-  config.azureApiVersion
-);
+// Configuration and client setup
+let appConfig: any;
+let openaiClient: OpenAIClient;
+
+// Initialize configuration and client
+const initializeApp = (isCloudflare: boolean = false, envConfig?: any) => {
+  appConfig = envConfig || config;
+  openaiClient = new OpenAIClient(
+    '', // API key now comes from client requests
+    appConfig.openaiBaseUrl,
+    appConfig.requestTimeout,
+    appConfig.azureApiVersion,
+    isCloudflare
+  );
+};
+
+// Initialize with default config for non-Cloudflare environments
+initializeApp();
+
+// Middleware to handle Cloudflare Workers environment
+app.use('*', async (c, next) => {
+  // @ts-ignore - Check if running in Cloudflare Workers
+  const cfConfig = c.env?.CONFIG || globalThis.CONFIG;
+  if (cfConfig) {
+    // Reinitialize for Cloudflare if needed
+    if (!openaiClient || appConfig !== cfConfig) {
+      initializeApp(true, cfConfig);
+    }
+  }
+  await next();
+});
 
 // Middleware for API key validation
 const validateApiKey = async (c: any, next: any) => {
@@ -39,18 +74,16 @@ app.post('/v1/messages', validateApiKey, async (c) => {
     const requestId = uuidv4();
     
     // Extract OpenAI API key from request headers
-    let openaiApiKey: string | null = null;
-    const xApiKey = c.req.header('x-api-key');
-    const authorization = c.req.header('authorization');
-    
-    if (xApiKey) {
-      openaiApiKey = xApiKey;
-    } else if (authorization && authorization.startsWith('Bearer ')) {
-      openaiApiKey = authorization.replace('Bearer ', '');
-    }
+    const openaiApiKey = ApiKeyExtractor.extractApiKey({
+      'x-api-key': c.req.header('x-api-key'),
+      authorization: c.req.header('authorization')
+    });
     
     // Convert Claude request to OpenAI format
     const openaiRequest = convertClaudeToOpenAI(request, modelManager);
+    
+    // @ts-ignore - Check if running in Cloudflare Workers
+    const isCloudflare = !!(c.env?.CONFIG || globalThis.CONFIG);
     
     if (request.stream) {
       // Set streaming headers
@@ -60,37 +93,75 @@ app.post('/v1/messages', validateApiKey, async (c) => {
       c.header('Access-Control-Allow-Origin', '*');
       c.header('Access-Control-Allow-Headers', '*');
       
-      // Streaming response
-      return stream(c, async (stream) => {
-        try {
-          const openaiStream = openaiClient.createChatCompletionStream(
-            openaiRequest,
-            requestId,
-            openaiApiKey || undefined
-          );
-          
-          const claudeStream = convertOpenAIStreamingToClaudeWithCancellation(
-            openaiStream,
-            request,
-            logger,
-            null, // HTTP request for disconnection check (not available in Hono)
-            openaiClient,
-            requestId
-          );
-          
-          for await (const chunk of claudeStream) {
-            await stream.write(chunk);
+      // Choose streaming method based on environment
+      if (isCloudflare) {
+        // Cloudflare Workers - use streamSSE
+        return streamSSE(c, async (stream) => {
+          try {
+            const openaiStream = await openaiClient.createChatCompletionStream(
+              openaiRequest,
+              requestId,
+              openaiApiKey || undefined
+            );
+            
+            const responseConverter = cfResponseConverter || { convertOpenAIStreamingToClaudeWithCancellation };
+            const claudeStream = responseConverter.convertOpenAIStreamingToClaudeWithCancellation(
+              openaiStream,
+              request,
+              logger,
+              null, // HTTP request for disconnection check (not available in Hono)
+              openaiClient,
+              requestId
+            );
+            
+            for await (const chunk of claudeStream) {
+              await stream.writeSSE({ data: chunk, event: 'message', id: requestId });
+            }
+            await stream.close();
+          } catch (error: any) {
+            logger.error(`Streaming error: ${error.message}`);
+            const errorMessage = openaiClient.classifyOpenAIError(error.message);
+            const errorResponse = {
+              type: 'error',
+              error: { type: 'api_error', message: errorMessage }
+            };
+            await stream.writeSSE({ data: JSON.stringify(errorResponse), event: 'error', id: requestId });
+            await stream.close();
           }
-        } catch (error: any) {
-          logger.error(`Streaming error: ${error.message}`);
-          const errorMessage = openaiClient.classifyOpenAIError(error.message);
-          const errorResponse = {
-            type: 'error',
-            error: { type: 'api_error', message: errorMessage }
-          };
-          await stream.write(`event: error\ndata: ${JSON.stringify(errorResponse)}\n\n`);
-        }
-      });
+        });
+      } else {
+        // Regular Node.js - use stream
+        return stream(c, async (stream) => {
+          try {
+            const openaiStream = await openaiClient.createChatCompletionStream(
+              openaiRequest,
+              requestId,
+              openaiApiKey || undefined
+            );
+            
+            const claudeStream = convertOpenAIStreamingToClaudeWithCancellation(
+              openaiStream,
+              request,
+              logger,
+              null, // HTTP request for disconnection check (not available in Hono)
+              openaiClient,
+              requestId
+            );
+            
+            for await (const chunk of claudeStream) {
+              await stream.write(chunk);
+            }
+          } catch (error: any) {
+            logger.error(`Streaming error: ${error.message}`);
+            const errorMessage = openaiClient.classifyOpenAIError(error.message);
+            const errorResponse = {
+              type: 'error',
+              error: { type: 'api_error', message: errorMessage }
+            };
+            await stream.write(`event: error\ndata: ${JSON.stringify(errorResponse)}\n\n`);
+          }
+        });
+      }
     } else {
       // Non-streaming response
       const openaiResponse = await openaiClient.createChatCompletion(
@@ -117,41 +188,8 @@ app.post('/v1/messages', validateApiKey, async (c) => {
 app.post('/v1/messages/count_tokens', validateApiKey, async (c) => {
   try {
     const request: ClaudeTokenCountRequest = await c.req.json();
-    
-    let totalChars = 0;
-    
-    // Count system message characters
-    if (request.system) {
-      if (typeof request.system === 'string') {
-        totalChars += request.system.length;
-      } else if (Array.isArray(request.system)) {
-        for (const block of request.system) {
-          if (block.text) {
-            totalChars += block.text.length;
-          }
-        }
-      }
-    }
-    
-    // Count message characters
-    for (const msg of request.messages) {
-      if (msg.content === null) {
-        continue;
-      } else if (typeof msg.content === 'string') {
-        totalChars += msg.content.length;
-      } else if (Array.isArray(msg.content)) {
-        for (const block of msg.content) {
-          if (block.text) {
-            totalChars += block.text.length;
-          }
-        }
-      }
-    }
-    
-    // Rough estimation: 4 characters per token
-    const estimatedTokens = Math.max(1, Math.floor(totalChars / 4));
-    
-    return c.json({ input_tokens: estimatedTokens });
+    const result = TokenCounter.countTokens(request);
+    return c.json(result);
   } catch (error: any) {
     logger.error(`Error counting tokens: ${error.message}`);
     throw new HTTPException(500, { message: error.message });
@@ -173,15 +211,10 @@ app.get('/health', async (c) => {
 app.get('/test-connection', async (c) => {
   try {
     // Extract OpenAI API key from request headers
-    let openaiApiKey: string | null = null;
-    const xApiKey = c.req.header('x-api-key');
-    const authorization = c.req.header('authorization');
-    
-    if (xApiKey) {
-      openaiApiKey = xApiKey;
-    } else if (authorization && authorization.startsWith('Bearer ')) {
-      openaiApiKey = authorization.replace('Bearer ', '');
-    }
+    const openaiApiKey = ApiKeyExtractor.extractApiKey({
+      'x-api-key': c.req.header('x-api-key'),
+      authorization: c.req.header('authorization')
+    });
     
     // Require API key for test connection
     if (!openaiApiKey) {
@@ -190,27 +223,33 @@ app.get('/test-connection', async (c) => {
       });
     }
     
+    // @ts-ignore - Check if running in Cloudflare Workers
+    const isCloudflare = !!(c.env?.CONFIG || globalThis.CONFIG);
+    
     // Create a client with the provided API key
     const client = new OpenAIClient(
-      openaiApiKey,
-      config.openaiBaseUrl,
-      config.requestTimeout,
-      config.azureApiVersion
+      isCloudflare ? undefined : openaiApiKey,
+      appConfig.openaiBaseUrl,
+      appConfig.requestTimeout,
+      appConfig.azureApiVersion,
+      isCloudflare
     );
     
     // Simple test request to verify API connectivity
     const testResponse = await client.createChatCompletion(
       {
-        model: config.smallModel,
+        model: appConfig.smallModel,
         messages: [{ role: 'user', content: 'Hello' }],
         max_tokens: 5
-      }
+      },
+      undefined,
+      openaiApiKey
     );
     
     return c.json({
       status: 'success',
       message: 'Successfully connected to OpenAI API',
-      model_used: config.smallModel,
+      model_used: appConfig.smallModel,
       timestamp: new Date().toISOString(),
       response_id: testResponse.id || 'unknown'
     });
@@ -236,13 +275,13 @@ app.get('/', async (c) => {
     message: 'Claude-to-OpenAI API Proxy v1.0.0',
     status: 'running',
     config: {
-      openai_base_url: config.openaiBaseUrl,
-      max_tokens_limit: config.maxTokensLimit,
+      openai_base_url: appConfig.openaiBaseUrl,
+      max_tokens_limit: appConfig.maxTokensLimit,
       api_key_configured: false,
       client_api_key_validation: false,
-      big_model: config.bigModel,
-      middle_model: config.middleModel,
-      small_model: config.smallModel
+      big_model: appConfig.bigModel,
+      middle_model: appConfig.middleModel,
+      small_model: appConfig.smallModel
     },
     endpoints: {
       messages: '/v1/messages',
