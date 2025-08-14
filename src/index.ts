@@ -12,9 +12,9 @@ function showHelp() {
   console.log('');
   console.log('Optional environment variables:');
   console.log(`  OPENAI_BASE_URL - OpenAI API base URL (default: https://api.openai.com/v1)`);
-  console.log(`  BIG_MODEL - Model for opus requests (default: gpt-4o)`);
-  console.log(`  MIDDLE_MODEL - Model for sonnet requests (default: gpt-4o)`);
-  console.log(`  SMALL_MODEL - Model for haiku requests (default: gpt-4o-mini)`);
+  console.log(`  BIG_MODEL - Model for opus requests (default: gpt-oss-120b)`);
+  console.log(`  MIDDLE_MODEL - Model for sonnet requests (default: gpt-oss-120b)`);
+  console.log(`  SMALL_MODEL - Model for haiku requests (default: gpt-oss-20b)`);
   console.log(`  HOST - Server host (default: 0.0.0.0)`);
   console.log(`  PORT - Server port (default: 8082)`);
   console.log(`  LOG_LEVEL - Logging level (default: WARNING)`);
@@ -24,7 +24,8 @@ function showHelp() {
   console.log('');
   console.log('Model mapping:');
   console.log(`  Claude haiku models -> ${config.smallModel}`);
-  console.log(`  Claude sonnet/opus models -> ${config.bigModel}`);
+  console.log(`  Claude sonnet models -> ${config.middleModel}`);
+  console.log(`  Claude opus models -> ${config.bigModel}`);
 }
 
 function main() {

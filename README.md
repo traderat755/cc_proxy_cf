@@ -67,9 +67,9 @@ pnpm lint
 
 ## Model Mapping
 
-- Claude Haiku models → `SMALL_MODEL` (default: gpt-4o-mini)
-- Claude Sonnet models → `MIDDLE_MODEL` (default: gpt-4o)
-- Claude Opus models → `BIG_MODEL` (default: gpt-4o)
+- Claude Haiku models → `SMALL_MODEL` (default: gpt-oss-120b-mini)
+- Claude Sonnet models → `MIDDLE_MODEL` (default: gpt-oss-120b)
+- Claude Opus models → `BIG_MODEL` (default: gpt-oss-120b)
 
 ## Architecture
 
@@ -90,6 +90,34 @@ The project uses:
 - **tsx**: Fast TypeScript execution
 - **ESLint**: Code linting
 - **OpenAI SDK**: OpenAI API client
+
+## Cloudflare Workers Deployment
+
+This project can be deployed as a Cloudflare Worker using the following steps:
+
+1. Install wrangler CLI:
+   ```bash
+   npm install -g wrangler
+   ```
+
+2. Login to Cloudflare:
+   ```bash
+   wrangler login
+   ```
+
+3. Build the Cloudflare Worker version:
+   ```bash
+   pnpm build-cf
+   ```
+
+4. Deploy to Cloudflare:
+   ```bash
+   pnpm deploy-cf
+   ```
+
+The Cloudflare Worker version uses the standard fetch API instead of the OpenAI SDK to ensure compatibility with the Cloudflare Workers runtime.
+
+Configuration variables can be set in the `wrangler.toml` file or through the Cloudflare dashboard.
 
 ## Environment Variables
 

@@ -27,9 +27,9 @@ class ConfigManager {
       minTokensLimit: parseInt(process.env.MIN_TOKENS_LIMIT || '100'),
       requestTimeout: parseInt(process.env.REQUEST_TIMEOUT || '90'),
       maxRetries: parseInt(process.env.MAX_RETRIES || '2'),
-      bigModel: process.env.BIG_MODEL || 'gpt-4o',
-      middleModel: process.env.MIDDLE_MODEL || process.env.BIG_MODEL || 'gpt-4o',
-      smallModel: process.env.SMALL_MODEL || 'gpt-4o-mini'
+      bigModel: process.env.BIG_MODEL || 'gpt-oss-120b',
+      middleModel: process.env.MIDDLE_MODEL || process.env.BIG_MODEL || 'gpt-oss-120b',
+      smallModel: process.env.SMALL_MODEL || 'gpt-oss-120b-mini'
     };
   }
 
