@@ -17,19 +17,20 @@ class ConfigManager {
   private _config: Config;
 
   constructor() {
+    const env = typeof process !== 'undefined' ? process.env : {};
     this._config = {
-      openaiBaseUrl: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
-      azureApiVersion: process.env.AZURE_API_VERSION,
-      host: process.env.HOST || '0.0.0.0',
-      port: parseInt(process.env.PORT || '8082'),
-      logLevel: process.env.LOG_LEVEL || 'INFO',
-      maxTokensLimit: parseInt(process.env.MAX_TOKENS_LIMIT || '4096'),
-      minTokensLimit: parseInt(process.env.MIN_TOKENS_LIMIT || '100'),
-      requestTimeout: parseInt(process.env.REQUEST_TIMEOUT || '90'),
-      maxRetries: parseInt(process.env.MAX_RETRIES || '2'),
-      bigModel: process.env.BIG_MODEL || 'gpt-oss-120b',
-      middleModel: process.env.MIDDLE_MODEL || process.env.BIG_MODEL || 'gpt-oss-120b',
-      smallModel: process.env.SMALL_MODEL || 'gpt-oss-120b-mini'
+      openaiBaseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
+      azureApiVersion: env.AZURE_API_VERSION,
+      host: env.HOST || '0.0.0.0',
+      port: parseInt(env.PORT || '8082'),
+      logLevel: env.LOG_LEVEL || 'INFO',
+      maxTokensLimit: parseInt(env.MAX_TOKENS_LIMIT || '4096'),
+      minTokensLimit: parseInt(env.MIN_TOKENS_LIMIT || '100'),
+      requestTimeout: parseInt(env.REQUEST_TIMEOUT || '90'),
+      maxRetries: parseInt(env.MAX_RETRIES || '2'),
+      bigModel: env.BIG_MODEL || 'gpt-oss-120b',
+      middleModel: env.MIDDLE_MODEL || env.BIG_MODEL || 'gpt-oss-120b',
+      smallModel: env.SMALL_MODEL || 'gpt-oss-120b-mini'
     };
   }
 

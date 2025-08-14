@@ -49,4 +49,6 @@ class SimpleLogger implements Logger {
   }
 }
 
-export const logger = new SimpleLogger(process.env.LOG_LEVEL || 'INFO');
+export const logger = new SimpleLogger(
+  (typeof process !== 'undefined' ? process.env.LOG_LEVEL : undefined) || 'INFO'
+);

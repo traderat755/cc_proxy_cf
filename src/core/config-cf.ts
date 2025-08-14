@@ -19,7 +19,7 @@ class ConfigManager {
   constructor(env?: any) {
     // For Cloudflare Workers, use the env parameter
     // For Node.js, use process.env
-    const environment = env || process.env;
+    const environment = env || (typeof process !== 'undefined' ? process.env : {});
     
     this._config = {
       openaiBaseUrl: environment.OPENAI_BASE_URL || 'https://api.openai.com/v1',
