@@ -1,5 +1,8 @@
 import { ClaudeMessagesRequest, ClaudeMessage } from '../models/claude.js';
 import { ModelManager } from '../core/model-manager.js';
+import { truncateContent, safeJsonStringify } from './shared-converters.js';
+
+const MAX_TOTAL_REQUEST_SIZE = 300000;
 
 export function convertClaudeToOpenAI(request: ClaudeMessagesRequest, modelManager: ModelManager): any {
   const openaiRequest: any = {
@@ -39,7 +42,7 @@ export function convertClaudeToOpenAI(request: ClaudeMessagesRequest, modelManag
     if (typeof request.system === 'string') {
       openaiRequest.messages.push({
         role: 'system',
-        content: request.system
+        content: truncateContent(request.system)
       });
     } else if (Array.isArray(request.system)) {
       const systemContent = request.system
@@ -50,238 +53,127 @@ export function convertClaudeToOpenAI(request: ClaudeMessagesRequest, modelManag
       if (systemContent) {
         openaiRequest.messages.push({
           role: 'system',
-          content: systemContent
+          content: truncateContent(systemContent)
         });
       }
     }
   }
 
-  // Convert messages with proper tool call/result handling
-  const messages = request.messages;
-  let i = 0;
+  // Convert messages using simplified approach
+  const convertedMessages = convertMessages(request.messages);
   
-  while (i < messages.length) {
-    const message = messages[i];
-    const openaiMessage = convertClaudeMessage(message);
-    
-    if (openaiMessage) {
-      openaiRequest.messages.push(openaiMessage);
-      
-      // If this is an assistant message with tool calls, check for tool results in next message
-      if (message.role === 'assistant' && openaiMessage.tool_calls) {
-        const toolCallIds = new Set(openaiMessage.tool_calls.map((tc: any) => tc.id));
-        
-        // Check if next message contains tool results
-        if (i + 1 < messages.length) {
-          const nextMessage = messages[i + 1];
-          if (nextMessage.role === 'user' && Array.isArray(nextMessage.content)) {
-            const toolResults = nextMessage.content.filter(block => block.type === 'tool_result');
-            
-            if (toolResults.length > 0) {
-              // Convert tool results to OpenAI format
-              const toolMessages = toolResults.map(result => ({
-                role: 'tool' as const,
-                tool_call_id: result.tool_use_id as string,
-                content: formatToolResultContent(result.content)
-              }));
-              
-              // Track which tool calls have responses
-              const respondedToolIds = new Set(toolMessages.map(tm => tm.tool_call_id));
-              
-              // Add tool result messages
-              openaiRequest.messages.push(...toolMessages);
-              
-              // Create dummy responses for any missing tool calls
-              for (const toolCallId of toolCallIds) {
-                if (!respondedToolIds.has(toolCallId as string)) {
-                  console.warn(`Missing tool result for tool_call_id: ${toolCallId}, creating dummy response`);
-                  openaiRequest.messages.push({
-                    role: 'tool' as const,
-                    tool_call_id: toolCallId as string,
-                    content: 'Tool execution completed without explicit result.'
-                  });
-                }
-              }
-              
-              // Skip the tool result message since we processed it
-              i++;
-            } else {
-              // No tool results found, create dummy responses for all tool calls
-              console.warn(`No tool results found for ${toolCallIds.size} tool calls, creating dummy responses`);
-              for (const toolCallId of toolCallIds) {
-                openaiRequest.messages.push({
-                  role: 'tool' as const,
-                  tool_call_id: toolCallId as string,
-                  content: 'Tool execution completed without explicit result.'
-                });
-              }
-            }
-          } else {
-            // Next message is not a user message with tool results, create dummy responses
-            console.warn(`Expected tool results but next message doesn't contain them, creating dummy responses for ${toolCallIds.size} tool calls`);
-            for (const toolCallId of toolCallIds) {
-              openaiRequest.messages.push({
-                role: 'tool',
-                tool_call_id: toolCallId as string,
-                content: 'Tool execution completed without explicit result.'
-              });
-            }
-          }
-        } else {
-          // No next message, create dummy responses for all tool calls
-          console.warn(`No next message found after tool calls, creating dummy responses for ${toolCallIds.size} tool calls`);
-          for (const toolCallId of toolCallIds) {
-            openaiRequest.messages.push({
-              role: 'tool',
-              tool_call_id: toolCallId as string,
-              content: 'Tool execution completed without explicit result.'
-            });
-          }
-        }
-      }
+  // Check request size incrementally
+  let currentSize = JSON.stringify({
+    ...openaiRequest,
+    messages: []
+  }).length;
+  
+  const finalMessages = [];
+  for (const message of convertedMessages) {
+    const messageSize = JSON.stringify(message).length;
+    if (currentSize + messageSize > MAX_TOTAL_REQUEST_SIZE) {
+      console.warn(`Stopping message addition at ${finalMessages.length} messages to prevent 413 error`);
+      break;
     }
-    
-    i++;
+    finalMessages.push(message);
+    currentSize += messageSize;
   }
+  
+  openaiRequest.messages = finalMessages;
 
   return openaiRequest;
 }
 
-function formatToolResultContent(content: any): string {
-  if (content === null || content === undefined) {
-    return 'No content provided';
-  }
+
+function truncateMessages(messages: any[], maxSize: number): any[] {
+  let currentSize = JSON.stringify(messages).length;
+  const truncatedMessages = [...messages];
   
-  if (typeof content === 'string') {
-    return content;
-  }
-  
-  if (Array.isArray(content)) {
-    const resultParts = [];
-    for (const item of content) {
-      if (typeof item === 'object' && item.type === 'text' && item.text) {
-        resultParts.push(item.text);
-      } else if (typeof item === 'string') {
-        resultParts.push(item);
-      } else {
-        try {
-          resultParts.push(JSON.stringify(item));
-        } catch {
-          resultParts.push(String(item));
-        }
-      }
+  // Remove messages from the beginning (keeping system and latest messages)
+  while (currentSize > maxSize && truncatedMessages.length > 2) {
+    // Keep system message and remove from index 1
+    if (truncatedMessages[0]?.role === 'system') {
+      truncatedMessages.splice(1, 1);
+    } else {
+      truncatedMessages.splice(0, 1);
     }
-    return resultParts.join('\n').trim();
+    currentSize = JSON.stringify(truncatedMessages).length;
   }
   
-  if (typeof content === 'object') {
-    if (content.type === 'text' && content.text) {
-      return content.text;
-    }
-    try {
-      return JSON.stringify(content);
-    } catch {
-      return String(content);
-    }
-  }
-  
-  try {
-    return String(content);
-  } catch {
-    return 'Unparseable content';
-  }
+  return truncatedMessages;
 }
 
-function convertClaudeMessage(message: ClaudeMessage): any {
-  // Handle null or undefined content
-  if (message.content === null || message.content === undefined) {
-    return {
-      role: message.role,
-      content: message.role === 'assistant' ? null : ''
-    };
-  }
+function convertMessages(claudeMessages: ClaudeMessage[]): any[] {
+  const openaiMessages: any[] = [];
+  
+  for (const message of claudeMessages) {
+    if (typeof message.content === 'string') {
+      openaiMessages.push({
+        role: message.role === 'assistant' ? 'assistant' : 'user',
+        content: truncateContent(message.content)
+      });
+      continue;
+    }
 
-  if (typeof message.content === 'string') {
-    return {
-      role: message.role,
-      content: message.content
-    };
-  }
-
-  if (Array.isArray(message.content)) {
-    const content: any[] = [];
-    const textParts: string[] = [];
+    const textContents: string[] = [];
     const toolCalls: any[] = [];
-    
-    for (const block of message.content) {
-      if (block.type === 'text' && block.text) {
-        if (message.role === 'assistant') {
-          textParts.push(block.text);
-        } else {
-          content.push({
-            type: 'text',
-            text: block.text
+    const toolResults: Array<{ tool_call_id: string; content: string }> = [];
+
+    for (const content of message.content) {
+      switch (content.type) {
+        case 'text':
+          textContents.push(content.text || '');
+          break;
+        case 'tool_use':
+          toolCalls.push({
+            id: content.id,
+            type: 'function',
+            function: {
+              name: content.name,
+              arguments: safeJsonStringify(content.input || {})
+            }
           });
-        }
-      } else if (block.type === 'image' && block.source) {
-        content.push({
-          type: 'image_url',
-          image_url: {
-            url: `data:${block.source.media_type};base64,${block.source.data}`
-          }
-        });
-      } else if (block.type === 'tool_use' && message.role === 'assistant') {
-        toolCalls.push({
-          id: block.id,
-          type: 'function',
-          function: {
-            name: block.name,
-            arguments: JSON.stringify(block.input || {})
-          }
-        });
+          break;
+        case 'tool_result':
+          const resultContent = typeof content.content === 'string' 
+            ? content.content 
+            : safeJsonStringify(content.content);
+          toolResults.push({
+            tool_call_id: content.tool_use_id || '',
+            content: truncateContent(resultContent)
+          });
+          break;
       }
     }
 
-    // For assistant messages, handle text and tool calls separately
-    if (message.role === 'assistant') {
+    // Add message with text and/or tool calls
+    if (textContents.length > 0 || toolCalls.length > 0) {
       const openaiMessage: any = {
-        role: 'assistant',
-        content: textParts.length > 0 ? textParts.join('') : null
+        role: message.role === 'assistant' ? 'assistant' : 'user'
       };
-      
+
+      if (textContents.length > 0) {
+        openaiMessage.content = truncateContent(textContents.join('\n'));
+      } else if (toolCalls.length === 0) {
+        openaiMessage.content = '';
+      }
+
       if (toolCalls.length > 0) {
         openaiMessage.tool_calls = toolCalls;
       }
-      
-      return openaiMessage;
+
+      openaiMessages.push(openaiMessage);
     }
 
-    // For user messages
-    if (content.length > 0) {
-      // If only one text block, return as string
-      if (content.length === 1 && content[0].type === 'text') {
-        return {
-          role: message.role,
-          content: content[0].text
-        };
-      }
-      
-      return {
-        role: message.role,
-        content: content
-      };
+    // Add tool result messages
+    for (const toolResult of toolResults) {
+      openaiMessages.push({
+        role: 'tool',
+        tool_call_id: toolResult.tool_call_id,
+        content: toolResult.content
+      });
     }
-    
-    // If no valid content blocks found
-    return {
-      role: message.role,
-      content: ''
-    };
   }
 
-  // Fallback for any other case
-  return {
-    role: message.role,
-    content: message.role === 'assistant' ? null : ''
-  };
+  return openaiMessages;
 }

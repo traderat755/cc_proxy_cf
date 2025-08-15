@@ -4,7 +4,6 @@ import { stream, streamSSE } from 'hono/streaming';
 import { v4 as uuidv4 } from 'uuid';
 
 import { config } from '../core/config';
-import { configManager } from '../core/config';
 import { logger } from '../core/logger';
 import { TokenCounter, ApiKeyExtractor } from '../core/shared-utils';
 import { OpenAIClient } from '../core/client';
@@ -49,8 +48,8 @@ initializeApp();
 
 // Middleware to handle Cloudflare Workers environment
 app.use('*', async (c, next) => {
-  // @ts-ignore - Check if running in Cloudflare Workers
-  const cfConfig = c.env?.CONFIG || globalThis.CONFIG;
+  // @ts-ignore - Check if running in Cloudflare Workers and get config
+  const cfConfig = globalThis.CONFIG;
   if (cfConfig) {
     // Reinitialize for Cloudflare if needed
     if (!openaiClient || appConfig !== cfConfig) {
@@ -81,8 +80,21 @@ app.post('/v1/messages', validateApiKey, async (c) => {
       authorization: c.req.header('authorization')
     });
     
+    // Validate token limits using current config
+    const currentConfig = (globalThis as any).CONFIG || appConfig;
+    if (request.max_tokens && request.max_tokens > currentConfig.maxTokensLimit) {
+      throw new HTTPException(400, {
+        message: `max_tokens (${request.max_tokens}) exceeds limit (${currentConfig.maxTokensLimit})`
+      });
+    }
+    
     // Convert Claude request to OpenAI format
     const openaiRequest = convertClaudeToOpenAI(request, modelManager);
+    
+    // Ensure max_tokens doesn't exceed limit
+    if (openaiRequest.max_tokens && openaiRequest.max_tokens > currentConfig.maxTokensLimit) {
+      openaiRequest.max_tokens = currentConfig.maxTokensLimit;
+    }
     
     // @ts-ignore - Check if running in Cloudflare Workers
     const isCloudflare = !!(c.env?.CONFIG || globalThis.CONFIG);
@@ -146,7 +158,6 @@ app.post('/v1/messages', validateApiKey, async (c) => {
               request,
               logger,
               null, // HTTP request for disconnection check (not available in Hono)
-              openaiClient,
               requestId
             );
             

@@ -25,6 +25,7 @@ export default {
     // @ts-ignore
     globalThis.CONFIG = configManager.config;
     
+    // Pass env to routes by setting it on the request
     return routes.fetch(request, env, ctx);
   }
 };

@@ -1,5 +1,5 @@
 import { ClaudeResponse, ClaudeMessagesRequest } from '../models/claude';
-import { convertOpenAIToClaudeResponse as sharedConvert, mapOpenAIFinishReason, createStreamingEvents } from './shared-converters';
+import { convertOpenAIToClaudeResponse as sharedConvert, mapOpenAIFinishReason, createStreamingEvents, processToolCallDelta } from './shared-converters';
 
 export function convertOpenAIToClaudeResponse(openaiResponse: any, originalRequest: ClaudeMessagesRequest): ClaudeResponse {
   return sharedConvert(openaiResponse, originalRequest);
@@ -9,7 +9,6 @@ export async function* convertOpenAIStreamingToClaudeWithCancellation(
   openaiStream: AsyncIterable<any> | ReadableStream,
   originalRequest: ClaudeMessagesRequest,
   logger: any,
-  httpRequest: any,
   openaiClient: any,
   requestId: string
 ): AsyncGenerator<string> {
@@ -17,9 +16,8 @@ export async function* convertOpenAIStreamingToClaudeWithCancellation(
   let stopReason = 'end_turn';
   const events = createStreamingEvents(requestId, originalRequest);
   
-  // Track tool calls
   let textBlockIndex = 0;
-  let toolBlockCounter = 0;
+  let toolBlockCounter = { value: 0 };
   const currentToolCalls: { [key: number]: {
     id: string | null;
     name: string | null;
@@ -71,58 +69,9 @@ export async function* convertOpenAIStreamingToClaudeWithCancellation(
                 // Handle tool call deltas
                 if (delta.tool_calls) {
                   for (const tcDelta of delta.tool_calls) {
-                    const tcIndex = tcDelta.index || 0;
-                    
-                    // Initialize tool call tracking by index if not exists
-                    if (!(tcIndex in currentToolCalls)) {
-                      currentToolCalls[tcIndex] = {
-                        id: null,
-                        name: null,
-                        argsBuffer: '',
-                        jsonSent: false,
-                        claudeIndex: null,
-                        started: false
-                      };
-                    }
-                    
-                    const toolCall = currentToolCalls[tcIndex];
-                    
-                    // Update tool call ID if provided
-                    if (tcDelta.id) {
-                      toolCall.id = tcDelta.id;
-                    }
-                    
-                    // Update function name
-                    const functionData = tcDelta.function;
-                    if (functionData?.name) {
-                      toolCall.name = functionData.name;
-                    }
-                    
-                    // Start content block when we have complete initial data
-                    if (toolCall.id && toolCall.name && !toolCall.started) {
-                      toolBlockCounter += 1;
-                      const claudeIndex = textBlockIndex + toolBlockCounter;
-                      toolCall.claudeIndex = claudeIndex;
-                      toolCall.started = true;
-                      
-                      yield `event: content_block_start\ndata: ${JSON.stringify(events.toolUseStart(claudeIndex, toolCall.id, toolCall.name))}\n\n`;
-                    }
-                    
-                    // Handle function arguments
-                    if (functionData?.arguments !== undefined && toolCall.started && functionData.arguments !== null) {
-                      toolCall.argsBuffer += functionData.arguments;
-                      
-                      // Try to parse complete JSON and send delta when we have valid JSON
-                      try {
-                        JSON.parse(toolCall.argsBuffer);
-                        // If parsing succeeds and we haven't sent this JSON yet
-                        if (!toolCall.jsonSent && toolCall.claudeIndex !== null) {
-                          yield `event: content_block_delta\ndata: ${JSON.stringify(events.toolUseDelta(toolCall.claudeIndex, toolCall.argsBuffer))}\n\n`;
-                          toolCall.jsonSent = true;
-                        }
-                      } catch {
-                        // JSON is incomplete, continue accumulating
-                      }
+                    const results = processToolCallDelta(tcDelta, currentToolCalls, events, textBlockIndex, toolBlockCounter);
+                    for (const result of results) {
+                      yield result;
                     }
                   }
                 }
@@ -158,58 +107,9 @@ export async function* convertOpenAIStreamingToClaudeWithCancellation(
         // Handle tool call deltas
         if (delta.tool_calls) {
           for (const tcDelta of delta.tool_calls) {
-            const tcIndex = tcDelta.index || 0;
-            
-            // Initialize tool call tracking by index if not exists
-            if (!(tcIndex in currentToolCalls)) {
-              currentToolCalls[tcIndex] = {
-                id: null,
-                name: null,
-                argsBuffer: '',
-                jsonSent: false,
-                claudeIndex: null,
-                started: false
-              };
-            }
-            
-            const toolCall = currentToolCalls[tcIndex];
-            
-            // Update tool call ID if provided
-            if (tcDelta.id) {
-              toolCall.id = tcDelta.id;
-            }
-            
-            // Update function name
-            const functionData = tcDelta.function;
-            if (functionData?.name) {
-              toolCall.name = functionData.name;
-            }
-            
-            // Start content block when we have complete initial data
-            if (toolCall.id && toolCall.name && !toolCall.started) {
-              toolBlockCounter += 1;
-              const claudeIndex = textBlockIndex + toolBlockCounter;
-              toolCall.claudeIndex = claudeIndex;
-              toolCall.started = true;
-              
-              yield `event: content_block_start\ndata: ${JSON.stringify(events.toolUseStart(claudeIndex, toolCall.id, toolCall.name))}\n\n`;
-            }
-            
-            // Handle function arguments
-            if (functionData?.arguments !== undefined && toolCall.started && functionData.arguments !== null) {
-              toolCall.argsBuffer += functionData.arguments;
-              
-              // Try to parse complete JSON and send delta when we have valid JSON
-              try {
-                JSON.parse(toolCall.argsBuffer);
-                // If parsing succeeds and we haven't sent this JSON yet
-                if (!toolCall.jsonSent && toolCall.claudeIndex !== null) {
-                  yield `event: content_block_delta\ndata: ${JSON.stringify(events.toolUseDelta(toolCall.claudeIndex, toolCall.argsBuffer))}\n\n`;
-                  toolCall.jsonSent = true;
-                }
-              } catch {
-                // JSON is incomplete, continue accumulating
-              }
+            const results = processToolCallDelta(tcDelta, currentToolCalls, events, textBlockIndex, toolBlockCounter);
+            for (const result of results) {
+              yield result;
             }
           }
         }

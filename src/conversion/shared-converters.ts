@@ -1,4 +1,4 @@
-import { ClaudeResponse, ClaudeStreamEvent, ClaudeMessagesRequest } from '../models/claude.js';
+import { ClaudeResponse, ClaudeStreamEvent, ClaudeMessagesRequest } from '../models/claude';
 
 export function convertOpenAIToClaudeResponse(openaiResponse: any, originalRequest: ClaudeMessagesRequest): ClaudeResponse {
   const choice = openaiResponse.choices[0];
@@ -74,6 +74,98 @@ export function mapOpenAIFinishReason(finishReason: string): string {
     default:
       return 'end_turn';
   }
+}
+
+// Content size limits
+const MAX_CONTENT_LENGTH = 50000;
+const MAX_TOOL_ARGS_LENGTH = 10000;
+
+export function truncateContent(content: string): string {
+  if (content.length <= MAX_CONTENT_LENGTH) {
+    return content;
+  }
+  return content.substring(0, MAX_CONTENT_LENGTH) + '... [truncated]';
+}
+
+export function safeJsonStringify(obj: any, maxLength: number = MAX_TOOL_ARGS_LENGTH): string {
+  try {
+    const str = JSON.stringify(obj);
+    if (str.length > maxLength) {
+      if (typeof obj === 'object' && obj !== null) {
+        const truncated = { ...obj };
+        for (const key in truncated) {
+          const keyStr = JSON.stringify(truncated[key]);
+          if (keyStr.length > maxLength / 2) {
+            truncated[key] = '[truncated]';
+          }
+        }
+        const newStr = JSON.stringify(truncated);
+        return newStr.length > maxLength ? '{}' : newStr;
+      }
+      return '{}';
+    }
+    return str;
+  } catch {
+    return '{}';
+  }
+}
+
+export function processToolCallDelta(
+  tcDelta: any, 
+  currentToolCalls: any, 
+  events: any, 
+  textBlockIndex: number, 
+  toolBlockCounter: { value: number }
+): string[] {
+  const results: string[] = [];
+  const tcIndex = tcDelta.index || 0;
+  
+  if (!(tcIndex in currentToolCalls)) {
+    currentToolCalls[tcIndex] = {
+      id: null,
+      name: null,
+      argsBuffer: '',
+      jsonSent: false,
+      claudeIndex: null,
+      started: false
+    };
+  }
+  
+  const toolCall = currentToolCalls[tcIndex];
+  
+  if (tcDelta.id) {
+    toolCall.id = tcDelta.id;
+  }
+  
+  const functionData = tcDelta.function;
+  if (functionData?.name) {
+    toolCall.name = functionData.name;
+  }
+  
+  if (toolCall.id && toolCall.name && !toolCall.started) {
+    toolBlockCounter.value += 1;
+    const claudeIndex = textBlockIndex + toolBlockCounter.value;
+    toolCall.claudeIndex = claudeIndex;
+    toolCall.started = true;
+    
+    results.push(`event: content_block_start\ndata: ${JSON.stringify(events.toolUseStart(claudeIndex, toolCall.id, toolCall.name))}\n\n`);
+  }
+  
+  if (functionData?.arguments !== undefined && toolCall.started && functionData.arguments !== null) {
+    toolCall.argsBuffer += functionData.arguments;
+    
+    try {
+      JSON.parse(toolCall.argsBuffer);
+      if (!toolCall.jsonSent && toolCall.claudeIndex !== null) {
+        results.push(`event: content_block_delta\ndata: ${JSON.stringify(events.toolUseDelta(toolCall.claudeIndex, toolCall.argsBuffer))}\n\n`);
+        toolCall.jsonSent = true;
+      }
+    } catch {
+      // JSON incomplete, continue accumulating
+    }
+  }
+  
+  return results;
 }
 
 export function createStreamingEvents(requestId: string, originalRequest: ClaudeMessagesRequest) {

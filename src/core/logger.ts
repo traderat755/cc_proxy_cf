@@ -50,5 +50,5 @@ class SimpleLogger implements Logger {
 }
 
 export const logger = new SimpleLogger(
-  (typeof process !== 'undefined' ? process.env.LOG_LEVEL : undefined) || 'INFO'
+  (typeof globalThis !== 'undefined' && (globalThis as any).process ? (globalThis as any).process.env.LOG_LEVEL : undefined) || 'INFO'
 );
