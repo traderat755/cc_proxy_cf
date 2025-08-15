@@ -1,6 +1,5 @@
-import { Hono } from 'hono';
-import { createConfigManager } from './core/config.js';
-import routes from './api/routes-cf.js';
+import { createConfigManager } from './core/config';
+import routes from './api/routes';
 import type { ExecutionContext } from '@cloudflare/workers-types';
 
 interface Env {
@@ -9,7 +8,7 @@ interface Env {
   HOST?: string;
   PORT?: string;
   LOG_LEVEL?: string;
-  MAX_TOKENS_LIMIT?: string;
+  MAX_TOKENS_LIMIT?: string; 
   MIN_TOKENS_LIMIT?: string;
   REQUEST_TIMEOUT?: string;
   MAX_RETRIES?: string;

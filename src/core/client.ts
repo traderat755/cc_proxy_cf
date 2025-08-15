@@ -1,6 +1,6 @@
 import OpenAI from 'openai';
-import { logger } from './logger.js';
-import { OpenAIErrorClassifier } from './shared-utils.js';
+import { logger } from './logger';
+import { OpenAIErrorClassifier } from './shared-utils';
 
 export class OpenAIClient {
   private client?: OpenAI;

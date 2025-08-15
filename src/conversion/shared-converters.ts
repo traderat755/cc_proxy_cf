@@ -4,16 +4,52 @@ export function convertOpenAIToClaudeResponse(openaiResponse: any, originalReque
   const choice = openaiResponse.choices[0];
   const message = choice.message;
   
+  // Build Claude content blocks
+  const contentBlocks: any[] = [];
+  
+  // Add text content
+  const textContent = message.content;
+  if (textContent !== null && textContent !== undefined) {
+    contentBlocks.push({
+      type: 'text',
+      text: textContent
+    });
+  }
+  
+  // Add tool calls
+  const toolCalls = message.tool_calls || [];
+  for (const toolCall of toolCalls) {
+    if (toolCall.type === 'function') {
+      const functionData = toolCall.function;
+      let arguments_;
+      try {
+        arguments_ = JSON.parse(functionData.arguments || '{}');
+      } catch {
+        arguments_ = { raw_arguments: functionData.arguments || '' };
+      }
+      
+      contentBlocks.push({
+        type: 'tool_use',
+        id: toolCall.id || `tool_${Math.random().toString(36).substr(2, 9)}`,
+        name: functionData.name || '',
+        input: arguments_
+      });
+    }
+  }
+  
+  // Ensure at least one content block
+  if (contentBlocks.length === 0) {
+    contentBlocks.push({
+      type: 'text',
+      text: ''
+    });
+  }
+  
   return {
     id: openaiResponse.id,
     type: 'message',
     role: 'assistant',
-    content: [
-      {
-        type: 'text',
-        text: message.content || ''
-      }
-    ],
+    content: contentBlocks,
     model: originalRequest.model,
     stop_reason: mapOpenAIFinishReason(choice.finish_reason),
     stop_sequence: null,
@@ -30,6 +66,9 @@ export function mapOpenAIFinishReason(finishReason: string): string {
       return 'end_turn';
     case 'length':
       return 'max_tokens';
+    case 'tool_calls':
+    case 'function_call':
+      return 'tool_use';
     case 'content_filter':
       return 'stop_sequence';
     default:
@@ -72,6 +111,31 @@ export function createStreamingEvents(requestId: string, originalRequest: Claude
         type: 'text_delta',
         text: text
       }
+    }),
+
+    toolUseStart: (index: number, id: string, name: string): ClaudeStreamEvent => ({
+      type: 'content_block_start',
+      index: index,
+      content_block: {
+        type: 'tool_use',
+        id: id,
+        name: name,
+        input: {}
+      }
+    }),
+
+    toolUseDelta: (index: number, partialJson: string): ClaudeStreamEvent => ({
+      type: 'content_block_delta',
+      index: index,
+      delta: {
+        type: 'input_json_delta',
+        partial_json: partialJson
+      }
+    }),
+
+    toolUseStop: (index: number): ClaudeStreamEvent => ({
+      type: 'content_block_stop',
+      index: index
     }),
 
     contentBlockStop: (): ClaudeStreamEvent => ({

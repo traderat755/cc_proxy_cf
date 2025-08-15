@@ -3,26 +3,28 @@ import { HTTPException } from 'hono/http-exception';
 import { stream, streamSSE } from 'hono/streaming';
 import { v4 as uuidv4 } from 'uuid';
 
-import { config } from '../core/config.js';
-import { configManager } from '../core/config.js';
-import { logger } from '../core/logger.js';
-import { TokenCounter, ApiKeyExtractor } from '../core/shared-utils.js';
-import { OpenAIClient } from '../core/client.js';
-import { modelManager } from '../core/model-manager.js';
-import { ClaudeMessagesRequest, ClaudeTokenCountRequest } from '../models/claude.js';
-import { convertClaudeToOpenAI } from '../conversion/request-converter.js';
+import { config } from '../core/config';
+import { configManager } from '../core/config';
+import { logger } from '../core/logger';
+import { TokenCounter, ApiKeyExtractor } from '../core/shared-utils';
+import { OpenAIClient } from '../core/client';
+import { modelManager } from '../core/model-manager';
+import { ClaudeMessagesRequest, ClaudeTokenCountRequest } from '../models/claude';
+import { convertClaudeToOpenAI } from '../conversion/request-converter';
 import { 
   convertOpenAIToClaudeResponse, 
   convertOpenAIStreamingToClaudeWithCancellation 
-} from '../conversion/response-converter.js';
+} from '../conversion/response-converter';
 
 // Support for Cloudflare response converter if available
 let cfResponseConverter: any = null;
-try {
-  cfResponseConverter = await import('../conversion/response-converter-cf.js');
-} catch {
-  // Fallback to regular response converter
-}
+(async () => {
+  try {
+    cfResponseConverter = await import('../conversion/response-converter');
+  } catch {
+    // Fallback to regular response converter
+  }
+})();
 
 const app = new Hono();
 

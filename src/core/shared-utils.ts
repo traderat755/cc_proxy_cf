@@ -1,4 +1,4 @@
-import { ClaudeTokenCountRequest } from '../models/claude.js';
+import { ClaudeTokenCountRequest } from '../models/claude';
 
 export class OpenAIErrorClassifier {
   static classifyError(errorMessage: string): string {

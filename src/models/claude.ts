@@ -4,18 +4,31 @@ export interface ClaudeMessage {
 }
 
 export interface ClaudeContent {
-  type: 'text' | 'image';
+  type: 'text' | 'image' | 'tool_use' | 'tool_result';
   text?: string;
   source?: {
     type: 'base64';
     media_type: string;
     data: string;
   };
+  // Tool use fields
+  id?: string;
+  name?: string;
+  input?: any;
+  // Tool result fields
+  tool_use_id?: string;
+  content?: any;
 }
 
 export interface ClaudeSystemMessage {
   type: 'text';
   text: string;
+}
+
+export interface ClaudeTool {
+  name: string;
+  description: string;
+  input_schema: any;
 }
 
 export interface ClaudeMessagesRequest {
@@ -28,6 +41,7 @@ export interface ClaudeMessagesRequest {
   top_k?: number;
   stream?: boolean;
   stop_sequences?: string[];
+  tools?: ClaudeTool[];
 }
 
 export interface ClaudeTokenCountRequest {
