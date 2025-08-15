@@ -8,9 +8,7 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "lint": "eslint src --ext .ts",
-    "type-check": "tsc --noEmit",
-    "build-cf": "tsc -p tsconfig-cf.json && cp wrangler.toml dist/",
-    "deploy-cf": "wrangler deploy"
+    "type-check": "tsc --noEmit"
   },
   "keywords": [
     "claude",
@@ -25,11 +23,9 @@
     "@hono/node-server": "^1.8.0",
     "dotenv": "^17.2.1",
     "hono": "^4.0.0",
-    "openai": "^4.20.0",
     "uuid": "^9.0.0"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.0.0",
     "@types/node": "^20.0.0",
     "@types/uuid": "^9.0.0",
     "@typescript-eslint/eslint-plugin": "^6.0.0",

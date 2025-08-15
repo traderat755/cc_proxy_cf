@@ -2,9 +2,13 @@ import { ClaudeMessagesRequest, ClaudeMessage } from '../models/claude.js';
 import { ModelManager } from '../core/model-manager.js';
 import { truncateContent, safeJsonStringify } from './shared-converters.js';
 
-const MAX_TOTAL_REQUEST_SIZE = 300000;
+const MAX_TOTAL_REQUEST_SIZE = 800000; // Reduce to ~800KB to avoid OpenAI 413
 
-export function convertClaudeToOpenAI(request: ClaudeMessagesRequest, modelManager: ModelManager): any {
+export function convertClaudeToOpenAI(
+  request: ClaudeMessagesRequest,
+  modelManager: ModelManager,
+  options?: { maxTotalRequestSize?: number }
+): any {
   const openaiRequest: any = {
     model: modelManager.getOpenAIModel(request.model),
     messages: [],
@@ -59,26 +63,39 @@ export function convertClaudeToOpenAI(request: ClaudeMessagesRequest, modelManag
     }
   }
 
-  // Convert messages using simplified approach
   const convertedMessages = convertMessages(request.messages);
   
-  // Check request size incrementally
-  let currentSize = JSON.stringify({
-    ...openaiRequest,
-    messages: []
-  }).length;
-  
+  // Prioritize keeping the system message and the most recent messages
+  const limit = options?.maxTotalRequestSize ?? MAX_TOTAL_REQUEST_SIZE;
   const finalMessages = [];
-  for (const message of convertedMessages) {
-    const messageSize = JSON.stringify(message).length;
-    if (currentSize + messageSize > MAX_TOTAL_REQUEST_SIZE) {
-      console.warn(`Stopping message addition at ${finalMessages.length} messages to prevent 413 error`);
-      break;
+  let currentSize = JSON.stringify({ ...openaiRequest, messages: [] }).length;
+
+  // Always include the system message if it exists and fits
+  const systemMessage = openaiRequest.messages.find((m: any) => m.role === 'system');
+  if (systemMessage) {
+    const systemMessageSize = JSON.stringify(systemMessage).length;
+    if (currentSize + systemMessageSize <= limit) {
+      finalMessages.push(systemMessage);
+      currentSize += systemMessageSize;
+    } else {
+      console.warn('System message is too large to fit within the budget.');
     }
-    finalMessages.push(message);
+  }
+
+  // Add messages from newest to oldest until the budget is full
+  for (let i = convertedMessages.length - 1; i >= 0; i--) {
+    const message = convertedMessages[i];
+    const messageSize = JSON.stringify(message).length;
+
+    if (currentSize + messageSize > limit) {
+      console.warn(`Request budget reached. Truncating older messages. Kept ${finalMessages.length - (systemMessage ? 1 : 0)} of ${convertedMessages.length} messages.`);
+      break; // Stop adding messages if budget is exceeded
+    }
+
+    finalMessages.splice(systemMessage ? 1 : 0, 0, message); // Insert after system message
     currentSize += messageSize;
   }
-  
+
   openaiRequest.messages = finalMessages;
 
   return openaiRequest;

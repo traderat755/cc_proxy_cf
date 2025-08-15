@@ -1,6 +1,5 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { stream, streamSSE } from 'hono/streaming';
 import { v4 as uuidv4 } from 'uuid';
 
 import { config } from '../core/config';
@@ -10,20 +9,10 @@ import { OpenAIClient } from '../core/client';
 import { modelManager } from '../core/model-manager';
 import { ClaudeMessagesRequest, ClaudeTokenCountRequest } from '../models/claude';
 import { convertClaudeToOpenAI } from '../conversion/request-converter';
-import { 
-  convertOpenAIToClaudeResponse, 
-  convertOpenAIStreamingToClaudeWithCancellation 
+import {
+  convertOpenAIToClaudeResponse,
+  convertOpenAIStreamingToClaudeWithCancellation
 } from '../conversion/response-converter';
-
-// Support for Cloudflare response converter if available
-let cfResponseConverter: any = null;
-(async () => {
-  try {
-    cfResponseConverter = await import('../conversion/response-converter');
-  } catch {
-    // Fallback to regular response converter
-  }
-})();
 
 const app = new Hono();
 
@@ -32,166 +21,227 @@ let appConfig: any;
 let openaiClient: OpenAIClient;
 
 // Initialize configuration and client
-const initializeApp = (isCloudflare: boolean = false, envConfig?: any) => {
+const initializeApp = (envConfig?: any) => {
   appConfig = envConfig || config;
   openaiClient = new OpenAIClient(
     '', // API key now comes from client requests
     appConfig.openaiBaseUrl,
     appConfig.requestTimeout,
-    appConfig.azureApiVersion,
-    isCloudflare
+    appConfig.azureApiVersion
   );
 };
 
-// Initialize with default config for non-Cloudflare environments
+// Initialize with default config
 initializeApp();
 
-// Middleware to handle Cloudflare Workers environment
-app.use('*', async (c, next) => {
-  // @ts-ignore - Check if running in Cloudflare Workers and get config
-  const cfConfig = globalThis.CONFIG;
-  if (cfConfig) {
-    // Reinitialize for Cloudflare if needed
-    if (!openaiClient || appConfig !== cfConfig) {
-      initializeApp(true, cfConfig);
+// Middleware to handle 413 errors gracefully and validate request size
+app.use('/v1/*', async (c, next) => {
+  const requestId = uuidv4();
+  logger.info(`[${requestId}] 🔍 Middleware processing request: ${c.req.method} ${c.req.url}`);
+
+  try {
+    // Check request body size before processing
+    // This is a preventive measure to catch large requests early
+    const contentLength = c.req.header('content-length');
+    if (contentLength) {
+      const bytes = parseInt(contentLength);
+      logger.info(`[${requestId}] 📏 Request size: ${bytes} bytes`);
+      // Warn for large requests
+      if (bytes > 50 * 1024 * 1024) {
+        logger.warn(`[${requestId}] ⚠️ Large request detected: ${bytes} bytes`);
+      }
+    } else {
+      logger.info(`[${requestId}] 📏 No content-length header found`);
     }
+
+    await next();
+    logger.info(`[${requestId}] ✅ Middleware completed successfully`);
+  } catch (error: any) {
+    // Check if this is a payload too large error
+    // Note: In Cloudflare Workers, the limit is 100MB, but other platforms may have different limits
+    if (error.status === 413 || (error.message && error.message.includes('limit'))) {
+      logger.warn(`[${requestId}] ❌ 413 Payload Too Large error caught: ${error.message}`);
+      // Return a more helpful error message
+      return c.json({
+        error: {
+          type: 'invalid_request_error',
+          message: 'Request payload too large. Please reduce the size of your request or break it into smaller parts. For large context requests, consider using smaller prompts or fewer messages.'
+        }
+      }, 413);
+    }
+    logger.error(`[${requestId}] ❌ Middleware error: ${error.message}`);
+    throw error;
   }
-  await next();
 });
 
 // Middleware for API key validation
 const validateApiKey = async (c: any, next: any) => {
+  const requestId = uuidv4();
+  logger.info(`[${requestId}] 🔑 API key validation middleware - No global validation needed`);
   // No global API key validation needed - each request will provide its own OpenAI API key
   await next();
 };
 
 // Messages endpoint
 app.post('/v1/messages', validateApiKey, async (c) => {
+  const requestId = uuidv4();
+  const startTime = Date.now();
+
+  logger.info(`[${requestId}] 🚀 New request received to /v1/messages`);
+  logger.info(`[${requestId}] 📍 Request URL: ${c.req.url}`);
+  logger.info(`[${requestId}] 🔑 Headers: ${JSON.stringify(c.req.header())}`);
+
   try {
+    logger.info(`[${requestId}] 📝 Parsing request body...`);
     const request: ClaudeMessagesRequest = await c.req.json();
-    
-    logger.debug(`Processing Claude request: model=${request.model}, stream=${request.stream}`);
-    
-    const requestId = uuidv4();
-    
-    // Extract OpenAI API key from request headers
+    logger.info(`[${requestId}] ✅ Request body parsed successfully`);
+    logger.info(`[${requestId}] 📊 Request details: model=${request.model}, stream=${request.stream}, max_tokens=${request.max_tokens}`);
+
+    logger.info(`[${requestId}] 🔑 Extracting API key from headers...`);
     const openaiApiKey = ApiKeyExtractor.extractApiKey({
       'x-api-key': c.req.header('x-api-key'),
-      authorization: c.req.header('authorization')
+      'authorization': c.req.header('authorization')
     });
-    
+    logger.info(`[${requestId}] ${openaiApiKey ? '✅ API key extracted' : '⚠️ No API key found'}`);
+
     // Validate token limits using current config
     const currentConfig = (globalThis as any).CONFIG || appConfig;
+    logger.info(`[${requestId}] ⚙️ Using config: maxTokensLimit=${currentConfig.maxTokensLimit}`);
+
     if (request.max_tokens && request.max_tokens > currentConfig.maxTokensLimit) {
+      logger.warn(`[${requestId}] ❌ max_tokens (${request.max_tokens}) exceeds limit (${currentConfig.maxTokensLimit})`);
       throw new HTTPException(400, {
         message: `max_tokens (${request.max_tokens}) exceeds limit (${currentConfig.maxTokensLimit})`
       });
     }
-    
+
+    logger.info(`[${requestId}] 🔄 Converting Claude request to OpenAI format...`);
     // Convert Claude request to OpenAI format
     const openaiRequest = convertClaudeToOpenAI(request, modelManager);
-    
+    logger.info(`[${requestId}] ✅ Request converted to OpenAI format`);
+
+    // Log payload size to help diagnose 413
+    try {
+      const payloadSize = JSON.stringify(openaiRequest).length;
+      logger.info(`[${requestId}] 📦 OpenAI payload size: ${payloadSize} bytes`);
+      if (payloadSize > 700 * 1024) {
+        logger.warn(`[${requestId}] ⚠️ OpenAI payload is large (>700KB): ${payloadSize} bytes`);
+      }
+    } catch (e) {
+      logger.warn(`[${requestId}] ⚠️ Could not determine payload size: ${e}`);
+    }
+
     // Ensure max_tokens doesn't exceed limit
     if (openaiRequest.max_tokens && openaiRequest.max_tokens > currentConfig.maxTokensLimit) {
+      logger.warn(`[${requestId}] ⚠️ Reducing max_tokens from ${openaiRequest.max_tokens} to ${currentConfig.maxTokensLimit}`);
       openaiRequest.max_tokens = currentConfig.maxTokensLimit;
     }
-    
-    // @ts-ignore - Check if running in Cloudflare Workers
-    const isCloudflare = !!(c.env?.CONFIG || globalThis.CONFIG);
-    
+
     if (request.stream) {
+      logger.info(`[${requestId}] 🌊 Starting streaming response...`);
       // Set streaming headers
       c.header('Content-Type', 'text/event-stream');
       c.header('Cache-Control', 'no-cache');
       c.header('Connection', 'keep-alive');
       c.header('Access-Control-Allow-Origin', '*');
       c.header('Access-Control-Allow-Headers', '*');
-      
-      // Choose streaming method based on environment
-      if (isCloudflare) {
-        // Cloudflare Workers - use streamSSE
-        return streamSSE(c, async (stream) => {
+
+      // Use ReadableStream for streaming
+      logger.info(`[${requestId}] 📡 Creating OpenAI streaming completion...`);
+      const openaiStream = await openaiClient.createChatCompletionStream(
+        openaiRequest,
+        requestId,
+        openaiApiKey || undefined
+      );
+      logger.info(`[${requestId}] ✅ OpenAI streaming started`);
+
+      // Store the AbortController for the OpenAI stream
+      const abortController = new AbortController();
+
+      const stream = new ReadableStream({
+        async start(controller) {
           try {
-            const openaiStream = await openaiClient.createChatCompletionStream(
-              openaiRequest,
-              requestId,
-              openaiApiKey || undefined
-            );
-            
-            const responseConverter = cfResponseConverter || { convertOpenAIStreamingToClaudeWithCancellation };
-            const claudeStream = responseConverter.convertOpenAIStreamingToClaudeWithCancellation(
-              openaiStream,
-              request,
-              logger,
-              null, // HTTP request for disconnection check (not available in Hono)
-              openaiClient,
-              requestId
-            );
-            
-            for await (const chunk of claudeStream) {
-              await stream.writeSSE({ data: chunk, event: 'message', id: requestId });
-            }
-            await stream.close();
-          } catch (error: any) {
-            logger.error(`Streaming error: ${error.message}`);
-            const errorMessage = openaiClient.classifyOpenAIError(error.message);
-            const errorResponse = {
-              type: 'error',
-              error: { type: 'api_error', message: errorMessage }
-            };
-            await stream.writeSSE({ data: JSON.stringify(errorResponse), event: 'error', id: requestId });
-            await stream.close();
-          }
-        });
-      } else {
-        // Regular Node.js - use stream
-        return stream(c, async (stream) => {
-          try {
-            const openaiStream = await openaiClient.createChatCompletionStream(
-              openaiRequest,
-              requestId,
-              openaiApiKey || undefined
-            );
-            
+            logger.info(`[${requestId}] 🔄 Converting OpenAI stream to Claude format...`);
             const claudeStream = convertOpenAIStreamingToClaudeWithCancellation(
               openaiStream,
               request,
               logger,
-              null, // HTTP request for disconnection check (not available in Hono)
+              openaiClient,
               requestId
             );
-            
-            for await (const chunk of claudeStream) {
-              await stream.write(chunk);
+            logger.info(`[${requestId}] ✅ Stream conversion ready`);
+
+            // Handle abort signal
+            if (abortController.signal) {
+              abortController.signal.addEventListener('abort', () => {
+                logger.info(`[${requestId}] 🚫 Stream was aborted`);
+                // Clean up resources if needed when aborted
+                controller.error(new Error('Stream was aborted'));
+              });
             }
-          } catch (error: any) {
-            logger.error(`Streaming error: ${error.message}`);
-            const errorMessage = openaiClient.classifyOpenAIError(error.message);
-            const errorResponse = {
-              type: 'error',
-              error: { type: 'api_error', message: errorMessage }
-            };
-            await stream.write(`event: error\ndata: ${JSON.stringify(errorResponse)}\n\n`);
+
+            let chunkCount = 0;
+            for await (const chunk of claudeStream) {
+              chunkCount++;
+              const event = `event: completion\ndata: ${JSON.stringify(chunk)}\n\n`;
+              controller.enqueue(new TextEncoder().encode(event));
+            }
+            logger.info(`[${requestId}] ✅ Stream completed with ${chunkCount} chunks`);
+            controller.enqueue(new TextEncoder().encode('event: done\ndata: [DONE]\n\n'));
+            controller.close();
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred';
+            logger.error(`[${requestId}] ❌ Streaming error: ${errorMessage}`);
+            const errorEvent = `event: error\ndata: ${JSON.stringify({ error: { type: 'error', message: errorMessage } })}\n\n`;
+            controller.enqueue(new TextEncoder().encode(errorEvent));
+            controller.close();
           }
-        });
-      }
+        },
+        cancel() {
+          logger.info(`[${requestId}] 🚫 Stream was cancelled`);
+          // Abort the stream when cancelled
+          abortController.abort();
+        },
+      });
+
+      logger.info(`[${requestId}] 🎯 Returning streaming response`);
+      return new Response(stream, {
+        headers: {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Headers': '*',
+        },
+      });
     } else {
+      logger.info(`[${requestId}] 📤 Starting non-streaming response...`);
       // Non-streaming response
+      logger.info(`[${requestId}] 📡 Creating OpenAI completion...`);
       const openaiResponse = await openaiClient.createChatCompletion(
         openaiRequest,
         requestId,
         openaiApiKey || undefined
       );
-      
+      logger.info(`[${requestId}] ✅ OpenAI response received`);
+
+      logger.info(`[${requestId}] 🔄 Converting OpenAI response to Claude format...`);
       const claudeResponse = convertOpenAIToClaudeResponse(openaiResponse, request);
+      logger.info(`[${requestId}] ✅ Response converted to Claude format`);
+
+      const duration = Date.now() - startTime;
+      logger.info(`[${requestId}] 🎯 Request completed successfully in ${duration}ms`);
+
       return c.json(claudeResponse);
     }
   } catch (error: any) {
+    const duration = Date.now() - startTime;
     if (error instanceof HTTPException) {
+      logger.warn(`[${requestId}] ⚠️ HTTP Exception (${error.status}): ${error.message} - Duration: ${duration}ms`);
       throw error;
     }
-    
-    logger.error(`Unexpected error processing request: ${error.message}`);
+
+    logger.error(`[${requestId}] ❌ Unexpected error processing request: ${error.message} - Duration: ${duration}ms`);
     const errorMessage = openaiClient.classifyOpenAIError(error.message);
     throw new HTTPException(500, { message: errorMessage });
   }
@@ -199,18 +249,26 @@ app.post('/v1/messages', validateApiKey, async (c) => {
 
 // Token count endpoint
 app.post('/v1/messages/count_tokens', validateApiKey, async (c) => {
+  const requestId = uuidv4();
+  logger.info(`[${requestId}] 🔢 Token count request received`);
+
   try {
     const request: ClaudeTokenCountRequest = await c.req.json();
+    logger.info(`[${requestId}] 📝 Request parsed: ${JSON.stringify(request)}`);
+
     const result = TokenCounter.countTokens(request);
+    logger.info(`[${requestId}] ✅ Token count completed: ${result.input_tokens} input tokens`);
+
     return c.json(result);
   } catch (error: any) {
-    logger.error(`Error counting tokens: ${error.message}`);
+    logger.error(`[${requestId}] ❌ Error counting tokens: ${error.message}`);
     throw new HTTPException(500, { message: error.message });
   }
 });
 
 // Health check endpoint
 app.get('/health', async (c) => {
+  logger.info(`🏥 Health check request received from ${c.req.header('user-agent') || 'unknown'}`);
   return c.json({
     status: 'healthy',
     timestamp: new Date().toISOString(),
@@ -220,70 +278,9 @@ app.get('/health', async (c) => {
   });
 });
 
-// Test connection endpoint
-app.get('/test-connection', async (c) => {
-  try {
-    // Extract OpenAI API key from request headers
-    const openaiApiKey = ApiKeyExtractor.extractApiKey({
-      'x-api-key': c.req.header('x-api-key'),
-      authorization: c.req.header('authorization')
-    });
-    
-    // Require API key for test connection
-    if (!openaiApiKey) {
-      throw new HTTPException(401, { 
-        message: 'API key required for test connection. Please provide a valid OpenAI API key in the x-api-key header or Authorization: Bearer header.' 
-      });
-    }
-    
-    // @ts-ignore - Check if running in Cloudflare Workers
-    const isCloudflare = !!(c.env?.CONFIG || globalThis.CONFIG);
-    
-    // Create a client with the provided API key
-    const client = new OpenAIClient(
-      isCloudflare ? undefined : openaiApiKey,
-      appConfig.openaiBaseUrl,
-      appConfig.requestTimeout,
-      appConfig.azureApiVersion,
-      isCloudflare
-    );
-    
-    // Simple test request to verify API connectivity
-    const testResponse = await client.createChatCompletion(
-      {
-        model: appConfig.smallModel,
-        messages: [{ role: 'user', content: 'Hello' }],
-        max_tokens: 5
-      },
-      undefined,
-      openaiApiKey
-    );
-    
-    return c.json({
-      status: 'success',
-      message: 'Successfully connected to OpenAI API',
-      model_used: appConfig.smallModel,
-      timestamp: new Date().toISOString(),
-      response_id: testResponse.id || 'unknown'
-    });
-  } catch (error: any) {
-    logger.error(`API connectivity test failed: ${error.message}`);
-    return c.json({
-      status: 'failed',
-      error_type: 'API Error',
-      message: error.message,
-      timestamp: new Date().toISOString(),
-      suggestions: [
-        'Check your OPENAI_API_KEY is valid',
-        'Verify your API key has the necessary permissions',
-        'Check if you have reached rate limits'
-      ]
-    }, 503);
-  }
-});
-
 // Root endpoint
 app.get('/', async (c) => {
+  logger.info(`🏠 Root endpoint accessed from ${c.req.header('user-agent') || 'unknown'}`);
   return c.json({
     message: 'Claude-to-OpenAI API Proxy v1.0.0',
     status: 'running',

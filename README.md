@@ -93,34 +93,6 @@ src/
 - **ESLint**: 代码检查
 - **OpenAI SDK**: OpenAI API 客户端
 
-## Cloudflare Workers 部署
-
-该项目可以部署为 Cloudflare Worker，步骤如下：
-
-1. 安装 wrangler CLI:
-   ```bash
-   npm install -g wrangler
-   ```
-
-2. 登录 Cloudflare:
-   ```bash
-   wrangler login
-   ```
-
-3. 构建 Cloudflare Worker 版本:
-   ```bash
-   pnpm build-cf
-   ```
-
-4. 部署到 Cloudflare:
-   ```bash
-   pnpm deploy-cf
-   ```
-
-Cloudflare Worker 版本使用标准 fetch API 而不是 OpenAI SDK，以确保与 Cloudflare Workers 运行时的兼容性。
-
-配置变量可以在 `wrangler.toml` 文件中设置，或通过 Cloudflare 仪表板进行配置。
-
 ## 环境变量
 
 请参阅 `.env.example` 文件了解所有可用的配置选项。

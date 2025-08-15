@@ -26,8 +26,8 @@ class ConfigManager {
       azureApiVersion: environment.AZURE_API_VERSION,
       host: environment.HOST || '0.0.0.0',
       port: parseInt(environment.PORT || '8082'),
-      logLevel: environment.LOG_LEVEL || 'INFO',
-      maxTokensLimit: parseInt(environment.MAX_TOKENS_LIMIT || '40960'),
+      logLevel: environment.LOG_LEVEL || 'DEBUG', // 默认改为 DEBUG 以确保能看到日志
+      maxTokensLimit: parseInt(environment.MAX_TOKENS_LIMIT || '100000'), // Increased limit
       minTokensLimit: parseInt(environment.MIN_TOKENS_LIMIT || '100'),
       requestTimeout: parseInt(environment.REQUEST_TIMEOUT || '90'),
       maxRetries: parseInt(environment.MAX_RETRIES || '2'),
@@ -35,6 +35,11 @@ class ConfigManager {
       middleModel: environment.MIDDLE_MODEL || environment.BIG_MODEL || 'openai/gpt-oss-120b',
       smallModel: environment.SMALL_MODEL || 'gpt-oss-20b'
     };
+
+    // 在 Cloudflare Workers 环境中，将配置设置到全局对象
+    if (typeof globalThis !== 'undefined' && !(globalThis as any).process) {
+      (globalThis as any).CONFIG = this._config;
+    }
   }
 
   get config(): Config {

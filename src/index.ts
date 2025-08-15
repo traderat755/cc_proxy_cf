@@ -49,13 +49,20 @@ function main() {
   console.log('');
 
   // Start server
-  serve({
+  const server = serve({
     fetch: routes.fetch,
     port: config.port,
     hostname: config.host
   });
 
-  console.log(`🌟 Server is running on http://${config.host}:${config.port}`);
+  server.on('listening', () => {
+    console.log(`🌟 Server is running on http://${config.host}:${config.port}`);
+  });
+
+  server.on('error', (error) => {
+    console.error('❌ Server error:', error);
+    process.exit(1);
+  });
   
   // Graceful shutdown
   process.on('SIGINT', () => {

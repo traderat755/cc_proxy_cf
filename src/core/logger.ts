@@ -24,31 +24,77 @@ class SimpleLogger implements Logger {
     return `[${timestamp}] ${level}: ${message}`;
   }
 
+  private logToConsole(level: string, message: string): void {
+    const formattedMessage = this.formatMessage(level, message);
+    
+    // 在 Cloudflare Workers 和 Node.js 环境中都确保日志输出
+    if (typeof console !== 'undefined') {
+      switch (level) {
+        case 'DEBUG':
+          console.log(formattedMessage);
+          break;
+        case 'INFO':
+          console.log(formattedMessage);
+          break;
+        case 'WARN':
+          console.warn(formattedMessage);
+          break;
+        case 'ERROR':
+          console.error(formattedMessage);
+          break;
+        default:
+          console.log(formattedMessage);
+      }
+    }
+    
+    // 在 Cloudflare Workers 环境中，也尝试使用 console.log
+    if (typeof globalThis !== 'undefined' && (globalThis as any).console) {
+      try {
+        (globalThis as any).console.log(formattedMessage);
+      } catch (e) {
+        // 忽略错误，继续执行
+      }
+    }
+  }
+
   debug(message: string): void {
     if (this.shouldLog('DEBUG')) {
-      console.log(this.formatMessage('DEBUG', message));
+      this.logToConsole('DEBUG', message);
     }
   }
 
   info(message: string): void {
     if (this.shouldLog('INFO')) {
-      console.log(this.formatMessage('INFO', message));
+      this.logToConsole('INFO', message);
     }
   }
 
   warn(message: string): void {
     if (this.shouldLog('WARN')) {
-      console.warn(this.formatMessage('WARN', message));
+      this.logToConsole('WARN', message);
     }
   }
 
   error(message: string): void {
     if (this.shouldLog('ERROR')) {
-      console.error(this.formatMessage('ERROR', message));
+      this.logToConsole('ERROR', message);
     }
   }
 }
 
-export const logger = new SimpleLogger(
-  (typeof globalThis !== 'undefined' && (globalThis as any).process ? (globalThis as any).process.env.LOG_LEVEL : undefined) || 'INFO'
-);
+// 获取日志级别，优先使用环境变量，默认为 DEBUG 以确保能看到所有日志
+function getLogLevel(): string {
+  // 尝试从多个来源获取日志级别
+  if (typeof globalThis !== 'undefined' && (globalThis as any).process && (globalThis as any).process.env) {
+    return (globalThis as any).process.env.LOG_LEVEL || 'DEBUG';
+  }
+  
+  // 在 Cloudflare Workers 环境中，尝试从全局配置获取
+  if (typeof globalThis !== 'undefined' && (globalThis as any).CONFIG) {
+    return (globalThis as any).CONFIG.logLevel || 'DEBUG';
+  }
+  
+  return 'DEBUG';
+}
+
+export const logger = new SimpleLogger(getLogLevel());

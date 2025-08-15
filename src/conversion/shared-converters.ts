@@ -76,9 +76,9 @@ export function mapOpenAIFinishReason(finishReason: string): string {
   }
 }
 
-// Content size limits
-const MAX_CONTENT_LENGTH = 50000;
-const MAX_TOOL_ARGS_LENGTH = 10000;
+// Content size limits (tightened to reduce overall payload size)
+const MAX_CONTENT_LENGTH = 200000; // 200KB
+const MAX_TOOL_ARGS_LENGTH = 50000; // 50KB
 
 export function truncateContent(content: string): string {
   if (content.length <= MAX_CONTENT_LENGTH) {
