@@ -1,4 +1,4 @@
-name = "claude-proxy-worker"
+name = "claude-proxy"
 main = "dist/worker.js"
 compatibility_date = "2024-08-15"
 compatibility_flags = ["nodejs_compat"]
@@ -12,11 +12,10 @@ compatibility_flags = ["nodejs_compat"]
 # wrangler secret put REQUEST_TIMEOUT
 
 [vars]
-# Default configuration values (can be overridden by secrets)
-OPENAI_BASE_URL=https://nyukitth.ap-southeast-1.clawcloudrun.com/v1
-BIG_MODEL=gemini-2.5-pro
-MIDDLE_MODEL=qwen-3-coder-480b
-SMALL_MODEL=openai/gpt-oss-120b
+OPENAI_BASE_URL="https://nyukitth.ap-southeast-1.clawcloudrun.com/v1"
+BIG_MODEL="gemini-2.5-pro"
+MIDDLE_MODEL="qwen-3-coder-480b"
+SMALL_MODEL="openai/gpt-oss-120b"
 LOG_LEVEL = "WARNING"
 
 # Build configuration

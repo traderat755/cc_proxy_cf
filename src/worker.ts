@@ -1,18 +1,15 @@
-import { Hono } from 'hono';
-import { cors } from 'hono/cors';
-import { HTTPException } from 'hono/http-exception';
 import { v4 as uuidv4 } from 'uuid';
-
 import { logger } from './core/logger';
-import { TokenCounter, ApiKeyExtractor } from './core/shared-utils';
+import { ApiKeyExtractor } from './core/shared-utils';
 import { OpenAIClient } from './core/client';
 import { modelManager } from './core/model-manager';
-import { ClaudeMessagesRequest, ClaudeTokenCountRequest } from './models/claude';
+import { ClaudeMessagesRequest } from './models/claude';
 import { convertClaudeToOpenAI } from './conversion/request-converter';
 import {
   convertOpenAIToClaudeResponse,
   convertOpenAIStreamingToClaudeWithCancellation
 } from './conversion/response-converter';
+import type { ExecutionContext } from '@cloudflare/workers-types';
 
 // Cloudflare Worker environment interface
 export interface Env {
@@ -25,16 +22,8 @@ export interface Env {
   REQUEST_TIMEOUT?: string;
   LOG_LEVEL?: string;
   AZURE_API_VERSION?: string;
+  MAX_REQUEST_SIZE?: string;
 }
-
-const app = new Hono<{ Bindings: Env }>();
-
-// CORS middleware
-app.use('*', cors({
-  origin: '*',
-  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowHeaders: ['*'],
-}));
 
 // Configuration helper
 const getConfig = (env: Env) => ({
@@ -42,85 +31,102 @@ const getConfig = (env: Env) => ({
   bigModel: env.BIG_MODEL || 'openai/gpt-oss-120b',
   middleModel: env.MIDDLE_MODEL || 'openai/gpt-oss-120b',
   smallModel: env.SMALL_MODEL || 'gpt-oss-20b',
-  maxTokensLimit: parseInt(env.MAX_TOKENS_LIMIT || '4096'),
+  maxTokensLimit: parseInt(env.MAX_TOKENS_LIMIT || '40960'),
   minTokensLimit: parseInt(env.MIN_TOKENS_LIMIT || '100'),
   requestTimeout: parseInt(env.REQUEST_TIMEOUT || '90'),
   azureApiVersion: env.AZURE_API_VERSION || '2024-02-01',
-  logLevel: env.LOG_LEVEL || 'WARNING'
+  logLevel: env.LOG_LEVEL || 'WARNING',
+  maxRequestSize: parseInt(env.MAX_REQUEST_SIZE || '800000')
 });
 
-// Middleware to handle 413 errors gracefully and validate request size
-app.use('/v1/*', async (c, next) => {
-  const requestId = uuidv4();
-  logger.info(`[${requestId}] 🔍 Middleware processing request: ${c.req.method} ${c.req.url}`);
-
-  try {
-    // Check request body size before processing
-    const contentLength = c.req.header('content-length');
-    if (contentLength) {
-      const bytes = parseInt(contentLength);
-      logger.info(`[${requestId}] 📏 Request size: ${bytes} bytes`);
-      // Cloudflare Workers has a 100MB limit
-      if (bytes > 100 * 1024 * 1024) {
-        logger.warn(`[${requestId}] ❌ Request exceeds Cloudflare Workers 100MB limit: ${bytes} bytes`);
-        return c.json({
-          error: {
-            type: 'invalid_request_error',
-            message: 'Request payload too large. Cloudflare Workers has a 100MB limit. Please reduce the size of your request or break it into smaller parts.'
-          }
-        }, 413);
-      }
-      if (bytes > 50 * 1024 * 1024) {
-        logger.warn(`[${requestId}] ⚠️ Large request detected: ${bytes} bytes`);
-      }
-    }
-
-    await next();
-    logger.info(`[${requestId}] ✅ Middleware completed successfully`);
-  } catch (error: any) {
-    if (error.status === 413 || (error.message && error.message.includes('limit'))) {
-      logger.warn(`[${requestId}] ❌ 413 Payload Too Large error caught: ${error.message}`);
-      return c.json({
-        error: {
-          type: 'invalid_request_error',
-          message: 'Request payload too large. Please reduce the size of your request or break it into smaller parts.'
-        }
-      }, 413);
-    }
-    logger.error(`[${requestId}] ❌ Middleware error: ${error.message}`);
-    throw error;
-  }
-});
-
-// Middleware for API key validation
-const validateApiKey = async (c: any, next: any) => {
-  const requestId = uuidv4();
-  logger.info(`[${requestId}] 🔑 API key validation middleware - No global validation needed`);
-  await next();
+// CORS headers
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': '*',
 };
 
-// Messages endpoint
-app.post('/v1/messages', validateApiKey, async (c) => {
+// Helper to create JSON responses
+const jsonResponse = (data: any, status = 200, headers: Record<string, string> = {}) => {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      'Content-Type': 'application/json',
+      ...corsHeaders,
+      ...headers
+    },
+  });
+};
+
+// Handle OPTIONS requests for CORS preflight
+const handleOptions = (request: Request) => {
+  if (
+    request.headers.get('Origin') !== null &&
+    request.headers.get('Access-Control-Request-Method') !== null &&
+    request.headers.get('Access-Control-Request-Headers') !== null
+  ) {
+    return new Response(null, {
+      headers: {
+        ...corsHeaders,
+        'Access-Control-Max-Age': '86400',
+      },
+    });
+  }
+  return new Response(null, { status: 204 });
+};
+
+// Handle request body parsing with size limits
+const parseRequestBody = async (request: Request, requestId: string): Promise<any> => {
+  const contentLength = request.headers.get('content-length');
+  
+  if (contentLength) {
+    const bytes = parseInt(contentLength);
+    logger.info(`[${requestId}] 📏 Request size: ${bytes} bytes`);
+    
+    // Cloudflare Workers has a 100MB limit
+    if (bytes > 100 * 1024 * 1024) {
+      logger.warn(`[${requestId}] ❌ Request exceeds Cloudflare Workers 100MB limit: ${bytes} bytes`);
+      throw new Error('PAYLOAD_TOO_LARGE');
+    }
+    
+    if (bytes > 50 * 1024 * 1024) {
+      logger.warn(`[${requestId}] ⚠️ Large request detected: ${bytes} bytes`);
+    }
+  }
+
+  try {
+    return await request.json();
+  } catch (error) {
+    logger.error(`[${requestId}] ❌ Error parsing request body: ${error}`);
+    throw new Error('INVALID_JSON');
+  }
+};
+
+// Handle messages endpoint
+const handleMessages = async (request: Request, env: Env) => {
   const requestId = uuidv4();
   const startTime = Date.now();
-  const config = getConfig(c.env);
+  const config = getConfig(env);
 
   logger.info(`[${requestId}] 🚀 New request received to /v1/messages`);
 
   try {
-    const request: ClaudeMessagesRequest = await c.req.json();
+    const requestBody = await parseRequestBody(request, requestId) as ClaudeMessagesRequest;
     logger.info(`[${requestId}] ✅ Request body parsed successfully`);
 
     const openaiApiKey = ApiKeyExtractor.extractApiKey({
-      'x-api-key': c.req.header('x-api-key'),
-      'authorization': c.req.header('authorization')
+      'x-api-key': request.headers.get('x-api-key') || '',
+      'authorization': request.headers.get('authorization') || ''
     });
 
-    if (request.max_tokens && request.max_tokens > config.maxTokensLimit) {
-      logger.warn(`[${requestId}] ❌ max_tokens (${request.max_tokens}) exceeds limit (${config.maxTokensLimit})`);
-      throw new HTTPException(400, {
-        message: `max_tokens (${request.max_tokens}) exceeds limit (${config.maxTokensLimit})`
-      });
+    if (requestBody.max_tokens && requestBody.max_tokens > config.maxTokensLimit) {
+      logger.warn(`[${requestId}] ❌ max_tokens (${requestBody.max_tokens}) exceeds limit (${config.maxTokensLimit})`);
+      return jsonResponse({
+        error: {
+          type: 'invalid_request_error',
+          message: `max_tokens (${requestBody.max_tokens}) exceeds limit (${config.maxTokensLimit})`
+        }
+      }, 400);
     }
 
     // Create OpenAI client for this request
@@ -131,14 +137,14 @@ app.post('/v1/messages', validateApiKey, async (c) => {
       config.azureApiVersion
     );
 
-    const openaiRequest = convertClaudeToOpenAI(request, modelManager);
+    const openaiRequest = convertClaudeToOpenAI(requestBody, modelManager, { maxTotalRequestSize: config.maxRequestSize });
 
     // Ensure max_tokens doesn't exceed limit
     if (openaiRequest.max_tokens && openaiRequest.max_tokens > config.maxTokensLimit) {
       openaiRequest.max_tokens = config.maxTokensLimit;
     }
 
-    if (request.stream) {
+    if (requestBody.stream) {
       logger.info(`[${requestId}] 🌊 Starting streaming response...`);
       
       const openaiStream = await openaiClient.createChatCompletionStream(
@@ -152,7 +158,7 @@ app.post('/v1/messages', validateApiKey, async (c) => {
           try {
             const claudeStream = convertOpenAIStreamingToClaudeWithCancellation(
               openaiStream,
-              request,
+              requestBody,
               logger,
               openaiClient,
               requestId
@@ -182,8 +188,7 @@ app.post('/v1/messages', validateApiKey, async (c) => {
           'Content-Type': 'text/event-stream',
           'Cache-Control': 'no-cache',
           'Connection': 'keep-alive',
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Headers': '*',
+          ...corsHeaders,
         },
       });
     } else {
@@ -193,61 +198,53 @@ app.post('/v1/messages', validateApiKey, async (c) => {
         openaiApiKey || undefined
       );
 
-      const claudeResponse = convertOpenAIToClaudeResponse(openaiResponse, request);
+      const claudeResponse = convertOpenAIToClaudeResponse(openaiResponse, requestBody);
       const duration = Date.now() - startTime;
       logger.info(`[${requestId}] 🎯 Request completed successfully in ${duration}ms`);
 
-      return c.json(claudeResponse);
+      return jsonResponse(claudeResponse);
     }
   } catch (error: any) {
     const duration = Date.now() - startTime;
-    if (error instanceof HTTPException) {
-      logger.warn(`[${requestId}] ⚠️ HTTP Exception (${error.status}): ${error.message} - Duration: ${duration}ms`);
-      throw error;
+    
+    if (error.message === 'PAYLOAD_TOO_LARGE') {
+      return jsonResponse({
+        error: {
+          type: 'invalid_request_error',
+          message: 'Request payload too large. Cloudflare Workers has a 100MB limit. Please reduce the size of your request or break it into smaller parts.'
+        }
+      }, 413);
+    }
+    
+    if (error.message === 'INVALID_JSON') {
+      return jsonResponse({
+        error: {
+          type: 'invalid_request_error',
+          message: 'Invalid JSON in request body'
+        }
+      }, 400);
     }
 
     logger.error(`[${requestId}] ❌ Unexpected error processing request: ${error.message} - Duration: ${duration}ms`);
     const openaiClient = new OpenAIClient('', config.openaiBaseUrl, config.requestTimeout);
     const errorMessage = openaiClient.classifyOpenAIError(error.message);
-    throw new HTTPException(500, { message: errorMessage });
+    
+    return jsonResponse({
+      error: {
+        type: 'api_error',
+        message: errorMessage
+      }
+    }, 500);
   }
-});
+};
 
-// Token count endpoint
-app.post('/v1/messages/count_tokens', validateApiKey, async (c) => {
-  const requestId = uuidv4();
-  logger.info(`[${requestId}] 🔢 Token count request received`);
 
-  try {
-    const request: ClaudeTokenCountRequest = await c.req.json();
-    const result = TokenCounter.countTokens(request);
-    logger.info(`[${requestId}] ✅ Token count completed: ${result.input_tokens} input tokens`);
-    return c.json(result);
-  } catch (error: any) {
-    logger.error(`[${requestId}] ❌ Error counting tokens: ${error.message}`);
-    throw new HTTPException(500, { message: error.message });
-  }
-});
 
-// Health check endpoint
-app.get('/health', async (c) => {
-  const config = getConfig(c.env);
-  logger.info(`🏥 Health check request received`);
-  return c.json({
-    status: 'healthy',
-    timestamp: new Date().toISOString(),
-    openai_api_configured: true,
-    api_key_valid: true,
-    client_api_key_validation: false,
-    platform: 'cloudflare-workers'
-  });
-});
-
-// Root endpoint
-app.get('/', async (c) => {
-  const config = getConfig(c.env);
+// Handle root endpoint
+const handleRoot = (env: Env) => {
+  const config = getConfig(env);
   logger.info(`🏠 Root endpoint accessed`);
-  return c.json({
+  return jsonResponse({
     message: 'Claude-to-OpenAI API Proxy v1.0.0',
     status: 'running',
     platform: 'cloudflare-workers',
@@ -261,14 +258,44 @@ app.get('/', async (c) => {
       small_model: config.smallModel
     },
     endpoints: {
-      messages: '/v1/messages',
-      count_tokens: '/v1/messages/count_tokens',
-      health: '/health'
+      messages: '/v1/messages'
     }
   });
-});
+};
 
-// Export the fetch handler for Cloudflare Workers
+// Main request handler
 export default {
-  fetch: app.fetch,
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const url = new URL(request.url);
+    const path = url.pathname;
+    const method = request.method;
+
+    // Handle CORS preflight
+    if (method === 'OPTIONS') {
+      return handleOptions(request);
+    }
+
+    // Route requests
+    try {
+      if (path === '/v1/messages' && method === 'POST') {
+        return handleMessages(request, env);
+      } else if ((path === '/' || path === '') && method === 'GET') {
+        return handleRoot(env);
+      } else {
+        return jsonResponse({
+          error: {
+            type: 'not_found',
+            message: 'The requested resource was not found.'
+          }
+        }, 404);
+      }
+    } catch (error: any) {
+      return jsonResponse({
+        error: {
+          type: 'internal_server_error',
+          message: error.message
+        }
+      }, 500);
+    }
+  }
 };

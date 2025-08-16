@@ -19,7 +19,7 @@ function showHelp() {
   console.log(`  HOST - Server host (default: 0.0.0.0)`);
   console.log(`  PORT - Server port (default: 8082)`);
   console.log(`  LOG_LEVEL - Logging level (default: WARNING)`);
-  console.log(`  MAX_TOKENS_LIMIT - Token limit (default: 4096)`);
+  console.log(`  MAX_TOKENS_LIMIT - Token limit (default: 40960)`);
   console.log(`  MIN_TOKENS_LIMIT - Minimum token limit (default: 100)`);
   console.log(`  REQUEST_TIMEOUT - Request timeout in seconds (default: 90)`);
   console.log('');

@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx watch --require dotenv/config src/index.ts",
     "build": "tsc",
-    "build:worker": "tsc src/worker.ts --outDir dist --target es2022 --module es2022 --moduleResolution node --allowSyntheticDefaultImports --esModuleInterop",
+    "build:worker": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "deploy": "wrangler deploy",
     "dev:worker": "wrangler dev",
